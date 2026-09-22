@@ -98,16 +98,26 @@ func (a *App) setThemeAccent(hex string) {
 	}
 	a.theme.AccentColor = hex
 	SetAccentColor(hex)
-	_ = config.SaveTheme(a.theme)
-	a.writeOverlay()
+	if err := config.SaveTheme(a.theme); err != nil {
+		a.setPersistenceError(err)
+		return
+	}
+	if err := a.writeOverlay(); err != nil {
+		a.setPersistenceError(err)
+	}
 }
 
 // setShowPB updates whether Personal Best is shown in the TUI and overlay,
 // saves it to theme.toml, and triggers an overlay rewrite.
 func (a *App) setShowPB(show bool) {
 	a.theme.ShowPB = show
-	_ = config.SaveTheme(a.theme)
-	a.writeOverlay()
+	if err := config.SaveTheme(a.theme); err != nil {
+		a.setPersistenceError(err)
+		return
+	}
+	if err := a.writeOverlay(); err != nil {
+		a.setPersistenceError(err)
+	}
 }
 
 // viewThemePicker renders the theme color picker screen.

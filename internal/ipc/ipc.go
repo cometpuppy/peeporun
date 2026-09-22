@@ -11,19 +11,44 @@ package ipc
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
+
+// Action is a command understood by the running application.
+type Action string
+
+const (
+	ActionHit     Action = "hit"
+	ActionUndo    Action = "undo"
+	ActionSplit   Action = "split"
+	ActionUnsplit Action = "unsplit"
+	ActionReset   Action = "reset"
+	ActionPreset  Action = "preset"
+)
+
+// IsAction reports whether s is a supported IPC action.
+func IsAction(s string) bool {
+	switch Action(s) {
+	case ActionHit, ActionUndo, ActionSplit, ActionUnsplit, ActionReset, ActionPreset:
+		return true
+	default:
+		return false
+	}
+}
 
 // Command is one request from a client (`peeporun hit`, etc.) to the
 // running TUI instance. Action is one of "hit", "undo", "split", "unsplit", "reset",
 // "preset" (Arg is the preset ID for that last one). Result must be sent
 // on exactly once by whoever handles the command.
 type Command struct {
-	Action string
+	Action Action
 	Arg    string
 	Result chan Result
 }
@@ -46,15 +71,33 @@ type Result struct {
 // Returns a stop func to shut the listener down and remove the socket
 // file - call it on program exit.
 func Serve(socketPath string, handle func(Command)) (stop func(), err error) {
-	// Best-effort: clean up a stale socket file left behind by a previous
-	// run that didn't exit cleanly (e.g. a crash). If another instance is
-	// genuinely still running, its Listen below will simply fail instead,
-	// which is the correct outcome.
-	os.Remove(socketPath)
+	if err := removeStaleSocket(socketPath); err != nil {
+		return nil, err
+	}
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", socketPath, err)
+	}
+	unixListener, ok := ln.(*net.UnixListener)
+	if !ok {
+		_ = ln.Close()
+		return nil, fmt.Errorf("listen on %s returned unexpected listener type %T", socketPath, ln)
+	}
+	// net.UnixListener otherwise unlinks the current pathname on Close,
+	// even if another endpoint has replaced it. Cleanup below verifies file
+	// identity before removing the socket we created.
+	unixListener.SetUnlinkOnClose(false)
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		_ = ln.Close()
+		_ = os.Remove(socketPath)
+		return nil, fmt.Errorf("secure socket %s: %w", socketPath, err)
+	}
+	socketInfo, err := os.Lstat(socketPath)
+	if err != nil {
+		_ = ln.Close()
+		_ = os.Remove(socketPath)
+		return nil, fmt.Errorf("inspect listening socket %s: %w", socketPath, err)
 	}
 
 	done := make(chan struct{})
@@ -73,17 +116,51 @@ func Serve(socketPath string, handle func(Command)) (stop func(), err error) {
 		}
 	}()
 
+	var stopOnce sync.Once
 	stop = func() {
-		close(done)
-		ln.Close()
-		os.Remove(socketPath)
+		stopOnce.Do(func() {
+			close(done)
+			_ = ln.Close()
+			currentInfo, statErr := os.Lstat(socketPath)
+			if statErr == nil && os.SameFile(socketInfo, currentInfo) {
+				_ = os.Remove(socketPath)
+			}
+		})
 	}
 	return stop, nil
 }
 
+func removeStaleSocket(socketPath string) error {
+	info, err := os.Lstat(socketPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect socket %s: %w", socketPath, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove non-socket path %s", socketPath)
+	}
+
+	conn, dialErr := net.DialTimeout("unix", socketPath, 250*time.Millisecond)
+	if dialErr == nil {
+		_ = conn.Close()
+		return fmt.Errorf("another peepoRun instance is already listening on %s", socketPath)
+	}
+	if !errors.Is(dialErr, syscall.ECONNREFUSED) && !errors.Is(dialErr, os.ErrNotExist) {
+		return fmt.Errorf("cannot determine whether socket %s is stale: %w", socketPath, dialErr)
+	}
+	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale socket %s: %w", socketPath, err)
+	}
+	return nil
+}
+
 func serveConn(conn net.Conn, handle func(Command)) {
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return
+	}
 
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
@@ -91,22 +168,22 @@ func serveConn(conn net.Conn, handle func(Command)) {
 	}
 	action, arg, _ := strings.Cut(strings.TrimSpace(scanner.Text()), " ")
 	if action == "" {
-		fmt.Fprintln(conn, "ERR empty command")
+		_, _ = fmt.Fprintln(conn, "ERR empty command")
 		return
 	}
 
 	resultCh := make(chan Result, 1)
-	handle(Command{Action: action, Arg: arg, Result: resultCh})
+	handle(Command{Action: Action(action), Arg: arg, Result: resultCh})
 
 	select {
 	case res := <-resultCh:
 		if res.OK {
-			fmt.Fprintln(conn, strings.TrimSpace("OK "+res.Msg))
+			_, _ = fmt.Fprintln(conn, strings.TrimSpace("OK "+res.Msg))
 		} else {
-			fmt.Fprintln(conn, strings.TrimSpace("ERR "+res.Msg))
+			_, _ = fmt.Fprintln(conn, strings.TrimSpace("ERR "+res.Msg))
 		}
 	case <-time.After(3 * time.Second):
-		fmt.Fprintln(conn, "ERR timed out waiting for the running instance to respond")
+		_, _ = fmt.Fprintln(conn, "ERR timed out waiting for the running instance to respond")
 	}
 }
 
@@ -115,14 +192,14 @@ func serveConn(conn net.Conn, handle func(Command)) {
 // means no peepoRun instance is currently listening there (not running,
 // or the socket path is wrong) - the caller should treat that as "not
 // running" rather than a generic error.
-func SendCommand(socketPath, action, arg string) (ok bool, msg string, err error) {
+func SendCommand(socketPath string, action Action, arg string) (ok bool, msg string, err error) {
 	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
 	if err != nil {
 		return false, "", err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	line := action
+	line := string(action)
 	if arg != "" {
 		line += " " + arg
 	}
@@ -130,7 +207,9 @@ func SendCommand(socketPath, action, arg string) (ok bool, msg string, err error
 		return false, "", err
 	}
 
-	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		return false, "", err
+	}
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
 		return false, "", fmt.Errorf("no response from running instance")

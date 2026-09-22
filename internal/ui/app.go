@@ -47,8 +47,10 @@ type App struct {
 
 	presetLoaded bool // true once the user has explicitly chosen a preset
 
-	width, height int
-	status        string
+	width, height  int
+	status         string
+	persistenceErr error
+	presetsDirty   bool
 
 	// preset select screen
 	selCursor int
@@ -101,7 +103,9 @@ func NewApp(kb config.Keybinds, presets []config.Preset, save config.SaveFile, o
 	a.syncSaveShape()
 	a.cursor = a.firstUnbeatenOrZero()
 	a.selCursor = a.presetIdx
-	a.writeOverlay()
+	if err := a.writeOverlay(); err != nil {
+		a.setPersistenceError(err)
+	}
 	return a
 }
 
@@ -127,7 +131,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// global quit (only when not typing in a text field)
 		if !a.inputActive() && config.Matches(key, a.kb.Quit) {
-			a.persist()
+			if a.presetsDirty {
+				a.persistPresets()
+			} else {
+				a.persistState()
+			}
+			if a.persistenceErr != nil {
+				return a, nil
+			}
 			return a, tea.Quit
 		}
 
@@ -175,6 +186,9 @@ func (a *App) View() string {
 		title = "peepoRun - A TUI Based Hit* Counter"
 	}
 	full := StyleAppTitle.Render(title) + "\n\n" + body
+	if a.status != "" {
+		full += "\n\n" + StyleHelp.Render(a.status)
+	}
 
 	if a.width == 0 {
 		return full
@@ -252,37 +266,46 @@ func (a *App) handleIPCCommand(cmd ipc.Command) {
 		res.OK = false
 		res.Msg = "no preset loaded - open peepoRun and select one first"
 	}
+	finish := func() {
+		if a.persistenceErr != nil {
+			res.OK = false
+			res.Msg = a.persistenceErr.Error()
+			return
+		}
+		res.OK = true
+	}
+	a.persistenceErr = nil
 
 	switch cmd.Action {
-	case "hit":
+	case ipc.ActionHit:
 		if len(a.presets) == 0 || !a.presetLoaded {
 			noPreset()
 			return
 		}
 		a.addHit(1)
-		res.OK = true
-	case "undo":
+		finish()
+	case ipc.ActionUndo:
 		if len(a.presets) == 0 || !a.presetLoaded {
 			noPreset()
 			return
 		}
 		a.addHit(-1)
-		res.OK = true
-	case "split":
+		finish()
+	case ipc.ActionSplit:
 		if len(a.presets) == 0 || !a.presetLoaded {
 			noPreset()
 			return
 		}
 		a.beatCurrentAndAdvance()
-		res.OK = true
-	case "unsplit":
+		finish()
+	case ipc.ActionUnsplit:
 		if len(a.presets) == 0 || !a.presetLoaded {
 			noPreset()
 			return
 		}
 		a.unsplit()
-		res.OK = true
-	case "reset":
+		finish()
+	case ipc.ActionReset:
 		// Deliberately skips the confirmation dialog the R key shows in
 		// the TUI - this path is meant for hotkey/CLI use while tabbed
 		// into the game, where there's no way to interact with a dialog
@@ -292,8 +315,8 @@ func (a *App) handleIPCCommand(cmd ipc.Command) {
 			return
 		}
 		a.resetRun()
-		res.OK = true
-	case "preset":
+		finish()
+	case ipc.ActionPreset:
 		if cmd.Arg == "" {
 			res.OK = false
 			res.Msg = "usage: peeporun preset <id>"
@@ -316,25 +339,49 @@ func (a *App) handleIPCCommand(cmd ipc.Command) {
 		a.syncSaveShape()
 		a.cursor = a.firstUnbeatenOrZero()
 		a.screen = screenTracker
-		a.persist()
-		res.OK = true
-		res.Msg = "switched to " + a.presets[idx].ID
+		a.persistState()
+		finish()
+		if res.OK {
+			res.Msg = "switched to " + a.presets[idx].ID
+		}
 	default:
 		res.OK = false
-		res.Msg = "unknown command: " + cmd.Action
+		res.Msg = "unknown command: " + string(cmd.Action)
 	}
 }
 
-func (a *App) persist() {
+func (a *App) persistState() {
+	a.persistenceErr = nil
 	if len(a.presets) > 0 {
 		a.save.LastPreset = a.currentPreset().ID
 	}
-	config.SaveState(a.save)
-	config.SavePresets(a.presets)
-	a.writeOverlay()
+	if err := config.SaveState(a.save); err != nil {
+		a.setPersistenceError(err)
+		return
+	}
+	if err := a.writeOverlay(); err != nil {
+		a.setPersistenceError(err)
+		return
+	}
 }
 
-func (a *App) writeOverlay() {
+func (a *App) persistPresets() {
+	a.persistenceErr = nil
+	a.presetsDirty = true
+	if err := config.SavePresets(a.presets); err != nil {
+		a.setPersistenceError(err)
+		return
+	}
+	a.presetsDirty = false
+	a.persistState()
+}
+
+func (a *App) setPersistenceError(err error) {
+	a.persistenceErr = err
+	a.status = "Save failed: " + err.Error()
+}
+
+func (a *App) writeOverlay() error {
 	data := overlay.Data{ShowPB: a.theme.ShowPB}
 	if len(a.presets) > 0 && a.presetLoaded {
 		p := a.currentPreset()
@@ -355,7 +402,7 @@ func (a *App) writeOverlay() {
 			data.TotalPB += pb.Hits
 		}
 	}
-	overlay.Write(data, a.overlay, a.theme.AccentColor)
+	return overlay.Write(data, a.overlay, a.theme.AccentColor)
 }
 
 func fmtInt(n int) string {

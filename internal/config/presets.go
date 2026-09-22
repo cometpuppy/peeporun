@@ -1,12 +1,15 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
+	"github.com/cometpuppy/peeporun/internal/atomicfile"
 )
 
 func DefaultPresets() []Preset {
@@ -86,15 +89,29 @@ type presetFile struct {
 }
 
 func presetFilePath(dir, id string) string {
-	return filepath.Join(dir, sanitizeFilename(id)+".toml")
+	return filepath.Join(dir, id+".toml")
 }
 
-// sanitizeFilename keeps preset IDs safe to use as filenames - guards
-// against path separators or other characters that would escape the
-// presets directory.
-func sanitizeFilename(id string) string {
-	r := strings.NewReplacer("/", "-", "\\", "-", "..", "-")
-	return r.Replace(id)
+// validatePresetID rejects identifiers that cannot safely and unambiguously
+// map to one filename. Replacing unsafe characters would allow two logical
+// IDs to silently collide or change identity after a save/load round trip.
+func validatePresetID(id string) error {
+	switch {
+	case id == "":
+		return fmt.Errorf("preset ID cannot be empty")
+	case id != strings.TrimSpace(id):
+		return fmt.Errorf("preset ID %q cannot have leading or trailing whitespace", id)
+	case id == "." || id == "..":
+		return fmt.Errorf("preset ID %q is reserved", id)
+	case filepath.Base(id) != id || strings.ContainsAny(id, `/\\`):
+		return fmt.Errorf("preset ID %q cannot contain path separators", id)
+	case len(id) > 128:
+		return fmt.Errorf("preset ID is too long (maximum 128 bytes)")
+	case strings.IndexFunc(id, unicode.IsControl) >= 0:
+		return fmt.Errorf("preset ID %q cannot contain control characters", id)
+	default:
+		return nil
+	}
 }
 
 // LoadPresets loads every preset from ~/.config/peeporun/presets/*.toml,
@@ -148,6 +165,14 @@ func LoadPresets() ([]Preset, error) {
 			return nil, err
 		}
 		id := strings.TrimSuffix(f.Name(), ".toml")
+		if err := validatePresetID(id); err != nil {
+			return nil, fmt.Errorf("invalid preset filename %q: %w", f.Name(), err)
+		}
+		for _, existing := range presets {
+			if strings.EqualFold(existing.ID, id) {
+				return nil, fmt.Errorf("preset IDs %q and %q collide", existing.ID, id)
+			}
+		}
 		presets = append(presets, Preset{
 			ID:       id,
 			Game:     pf.Game,
@@ -192,12 +217,17 @@ func migrateLegacyPresets(dir string) ([]Preset, error) {
 	}
 
 	// Keep the old file as a backup rather than silently deleting it.
-	os.Rename(legacyPath, legacyPath+".bak")
+	if err := os.Rename(legacyPath, legacyPath+".bak"); err != nil {
+		return nil, fmt.Errorf("back up legacy presets: %w", err)
+	}
 
 	return pf.Presets, nil
 }
 
 func writePresetFile(dir string, p Preset) error {
+	if err := validatePresetID(p.ID); err != nil {
+		return err
+	}
 	data, err := toml.Marshal(presetFile{
 		Game:     p.Game,
 		Category: p.Category,
@@ -206,7 +236,7 @@ func writePresetFile(dir string, p Preset) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(presetFilePath(dir, p.ID), data, 0o644)
+	return atomicfile.WriteFile(presetFilePath(dir, p.ID), data, 0o644)
 }
 
 // SavePresets writes every preset to its own file in the presets
@@ -219,11 +249,21 @@ func SavePresets(presets []Preset) error {
 	}
 
 	keep := make(map[string]bool, len(presets))
+	for i, p := range presets {
+		if err := validatePresetID(p.ID); err != nil {
+			return fmt.Errorf("invalid preset %q: %w", p.ID, err)
+		}
+		for _, previous := range presets[:i] {
+			if strings.EqualFold(previous.ID, p.ID) {
+				return fmt.Errorf("preset IDs %q and %q collide", previous.ID, p.ID)
+			}
+		}
+	}
 	for _, p := range presets {
 		if err := writePresetFile(dir, p); err != nil {
 			return err
 		}
-		keep[sanitizeFilename(p.ID)+".toml"] = true
+		keep[p.ID+".toml"] = true
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -235,7 +275,9 @@ func SavePresets(presets []Preset) error {
 			continue
 		}
 		if !keep[e.Name()] {
-			os.Remove(filepath.Join(dir, e.Name()))
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+				return fmt.Errorf("remove obsolete preset %q: %w", e.Name(), err)
+			}
 		}
 	}
 	return nil

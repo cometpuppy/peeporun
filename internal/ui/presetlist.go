@@ -30,7 +30,7 @@ func (a *App) updatePresetSelect(key string) (tea.Model, tea.Cmd) {
 			a.syncSaveShape()
 			a.cursor = a.firstUnbeatenOrZero()
 			a.screen = screenTracker
-			a.persist()
+			a.persistState()
 		}
 	case config.Matches(key, kb.Edit):
 		if n > 0 {
@@ -50,7 +50,7 @@ func (a *App) updatePresetSelect(key string) (tea.Model, tea.Cmd) {
 		a.editPresetIdx = len(a.presets) - 1
 		a.editCursor = -2
 		a.screen = screenPresetEdit
-		a.persist()
+		a.persistPresets()
 	case config.Matches(key, kb.Delete):
 		if n > 0 {
 			a.confirm = confirmDeletePreset
@@ -86,7 +86,7 @@ func (a *App) doDeletePreset() {
 	if a.presetIdx >= len(a.presets) {
 		a.presetIdx = a.selCursor
 	}
-	a.persist()
+	a.persistPresets()
 }
 
 func uniquePresetID(presets []config.Preset, base string) string {

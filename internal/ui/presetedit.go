@@ -51,13 +51,13 @@ func (a *App) updatePresetEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.editCursor > 0 && a.editCursor < len(p.Splits) {
 			p.Splits[a.editCursor-1], p.Splits[a.editCursor] = p.Splits[a.editCursor], p.Splits[a.editCursor-1]
 			a.editCursor--
-			a.persist()
+			a.persistPresets()
 		}
 	case config.Matches(key, kb.MoveDn):
 		if a.editCursor >= 0 && a.editCursor < len(p.Splits)-1 {
 			p.Splits[a.editCursor+1], p.Splits[a.editCursor] = p.Splits[a.editCursor], p.Splits[a.editCursor+1]
 			a.editCursor++
-			a.persist()
+			a.persistPresets()
 		}
 	case config.Matches(key, kb.Cancel):
 		a.screen = screenPresetSelect
@@ -139,7 +139,7 @@ func (a *App) commitEditField() {
 		a.editCursor = len(p.Splits) - 1
 	}
 	a.syncSaveShapeFor(*p)
-	a.persist()
+	a.persistPresets()
 }
 
 // maybeAutoRenamePresetID gives a freshly-created preset a real filename
@@ -231,7 +231,7 @@ func (a *App) doDeleteSplit() {
 		a.editCursor = -2
 	}
 	a.syncSaveShapeFor(*p)
-	a.persist()
+	a.persistPresets()
 }
 
 func (a *App) viewPresetEdit() string {

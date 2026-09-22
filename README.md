@@ -177,7 +177,10 @@ These Presets are the Splits I personally use for DS1 - DS3.
 
 Add your own via the TUI editor, or by hand-editing / dropping in files
 under `~/.config/peeporun/presets/`. Each preset is its own file (e.g.
-`ds3-any.toml`), named after the preset it represents:
+`ds3-any.toml`), named after the preset it represents. The filename stem is
+the preset ID; unsafe IDs (empty/dot names, path separators, surrounding
+whitespace, or case-insensitive duplicates) are rejected rather than silently
+rewritten to a different ID.
 
 ```toml
 game = "Dark Souls III"

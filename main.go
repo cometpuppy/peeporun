@@ -14,14 +14,6 @@ import (
 // (see .goreleaser.toml). Defaults to "dev" for local `go build`.
 var version = "dev"
 
-// commandActions are the subcommands that control an already-running
-// instance over the local socket instead of launching the TUI - meant to
-// be bound to hotkeys (e.g. via KDE Custom Shortcuts) or invoked from
-// scripts. See internal/ipc.
-var commandActions = map[string]bool{
-	"hit": true, "undo": true, "split": true, "unsplit": true, "reset": true, "preset": true,
-}
-
 func main() {
 	if len(os.Args) > 1 {
 		switch {
@@ -31,7 +23,7 @@ func main() {
 		case os.Args[1] == "help" || os.Args[1] == "-h" || os.Args[1] == "--help":
 			printHelp()
 			return
-		case commandActions[os.Args[1]]:
+		case ipc.IsAction(os.Args[1]):
 			arg := ""
 			if len(os.Args) > 2 {
 				arg = os.Args[2]
@@ -77,7 +69,7 @@ func runClientCommand(action, arg string) {
 	}
 
 	socketPath := config.SocketPath()
-	ok, msg, err := ipc.SendCommand(socketPath, action, arg)
+	ok, msg, err := ipc.SendCommand(socketPath, ipc.Action(action), arg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "peepoRun doesn't seem to be running:", err)
 		os.Exit(1)

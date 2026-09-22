@@ -5,6 +5,7 @@ import (
 	"regexp"
 
 	"github.com/BurntSushi/toml"
+	"github.com/cometpuppy/peeporun/internal/atomicfile"
 )
 
 const DefaultAccentColor = "#FFD400"
@@ -63,7 +64,9 @@ func LoadTheme() (ThemeSettings, error) {
 	}
 
 	var raw map[string]interface{}
-	_ = toml.Unmarshal(data, &raw) // best-effort, just to check key presence
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return ThemeSettings{}, err
+	}
 	_, hasShowPB := raw["show_pb"]
 
 	var t ThemeSettings
@@ -92,5 +95,5 @@ func SaveTheme(t ThemeSettings) error {
 		"# The standard theme color is " + DefaultAccentColor + "\n" +
 		"# show_pb controls whether Personal Best is shown, in BOTH the TUI\n" +
 		"# and the OBS overlay - set to false to hide it in both places.\n"
-	return os.WriteFile(path, append([]byte(header), data...), 0o644)
+	return atomicfile.WriteFile(path, append([]byte(header), data...), 0o644)
 }

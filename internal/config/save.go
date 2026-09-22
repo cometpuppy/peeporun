@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/BurntSushi/toml"
+	"github.com/cometpuppy/peeporun/internal/atomicfile"
 )
 
 func LoadSave() (SaveFile, error) {
@@ -39,5 +40,5 @@ func SaveState(sf SaveFile) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return atomicfile.WriteFile(path, data, 0o644)
 }

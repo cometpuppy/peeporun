@@ -58,7 +58,7 @@ func (a *App) addHit(delta int) {
 	}
 	ps.Current[a.cursor].Hits = h
 	a.save.Presets[p.ID] = ps
-	a.persist()
+	a.persistState()
 }
 
 func (a *App) beatCurrentAndAdvance() {
@@ -82,7 +82,7 @@ func (a *App) beatCurrentAndAdvance() {
 	if a.cursor < len(p.Splits)-1 {
 		a.cursor++
 	}
-	a.persist()
+	a.persistState()
 
 	if allBeaten {
 		total := 0
@@ -108,7 +108,7 @@ func (a *App) unsplit() {
 		ps.Current[a.cursor].Beaten = false
 	}
 	a.save.Presets[p.ID] = ps
-	a.persist()
+	a.persistState()
 }
 
 func (a *App) resetRun() {
@@ -120,7 +120,7 @@ func (a *App) resetRun() {
 	ps.Current = make([]config.SplitState, len(p.Splits))
 	a.save.Presets[p.ID] = ps
 	a.cursor = 0
-	a.persist()
+	a.persistState()
 }
 
 func (a *App) savePB() {
@@ -136,7 +136,7 @@ func (a *App) savePB() {
 	ps.PBTotal = total
 	ps.HasPB = true
 	a.save.Presets[p.ID] = ps
-	a.persist()
+	a.persistState()
 }
 
 func (a *App) deletePB() {
@@ -146,7 +146,7 @@ func (a *App) deletePB() {
 	ps.PBTotal = 0
 	ps.HasPB = false
 	a.save.Presets[p.ID] = ps
-	a.persist()
+	a.persistState()
 }
 
 func (a *App) viewTracker() string {

@@ -1,8 +1,7 @@
 package overlay
 
 import (
-	"os"
-
+	"github.com/cometpuppy/peeporun/internal/atomicfile"
 	"github.com/cometpuppy/peeporun/internal/config"
 )
 
@@ -18,5 +17,5 @@ func Write(d Data, settings config.OverlaySettings, accent string) error {
 		return err
 	}
 	html := Render(d, settings.RefreshSeconds, accent)
-	return os.WriteFile(path, []byte(html), 0o644)
+	return atomicfile.WriteFile(path, []byte(html), 0o644)
 }
